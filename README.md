@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./.github/onboarder-logo.pngß" width="120" alt="fn-onboarder logo" />
+  <img src="./.github/onboarder-logo.png" width="120" alt="fn-onboarder logo" />
 </p>
 
 <!-- Optional: a one-line header below the logo -->
