@@ -63,7 +63,19 @@ a:hover { text-decoration: underline; }
   top: 0;
   z-index: 10;
 }
-.brand { font-weight: 700; letter-spacing: 0.5px; }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.brand-logo {
+  height: 44px;
+  width: auto;
+  border-radius: 6px;
+  object-fit: contain;
+}
 .status { color: var(--muted); font-size: 14px; }
 .status strong { color: var(--text); margin-left: 6px; }
 
@@ -124,6 +136,9 @@ input, select, textarea, button {
   font-size: 14px;
 }
 textarea { min-height: 160px; resize: vertical; }
+label + input#city-overrides { margin-bottom: 10px; }
+input#city-overrides { margin-bottom: 10px; }
+textarea#csv-text { margin-top: 6px; }
 textarea[readonly] {
   background: repeating-linear-gradient(
     135deg,
@@ -203,6 +218,7 @@ button:disabled {
 .compact-input { width: 100%; padding: 6px 8px; }
 .compact-input.dirty { border-color: var(--accent); background: rgba(46,196,182,0.08); }
 .compact-save.dirty-btn { background: var(--accent); color: var(--btn-primary-text); border-color: var(--accent); }
+.pattern-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 
 .modal {
   display: none;
@@ -228,6 +244,10 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.modal .table-wrap {
+  max-height: 400px;
+  overflow-y: auto;
+}
 .close-modal {
   position: absolute;
   top: 8px;
@@ -242,6 +262,7 @@ button:disabled {
 }
 .close-modal:hover:not(:disabled) { background: var(--danger); color: #fff; }
 .compact-save { padding: 3px 6px; min-width: 64px; }
+.pattern-view { min-width: 20px; width: auto; padding: 2px 2px; flex: 0 0 auto; font-size: 12px; text-align: center; }
 
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; }

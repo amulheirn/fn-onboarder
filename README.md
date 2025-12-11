@@ -27,6 +27,7 @@ Delete tab with select-all and live search.
 
 - **Classic Devices**: Creates devices in Sources.  
 - **Device → Location**: Map devices to location IDs/names (auto-resolve names via GET locations), preview, bulk push (PATCH).
+- **Tag Maker**: Fetch device names, detect naming conventions, choose segments to build tags (with prefixes), preview, and apply tags to matching devices (using the latest snapshot). View/Edit lets you search, inline-edit tag names/colors, bulk save or delete with status badges; per-row save/delete also supported.
 - **Debug log**: Toggle in navbar; logs API responses across pages.
 
 
@@ -48,4 +49,3 @@ No automated tests included; run the app and exercise pages in the browser.
 
 
 [![downloads](https://img.shields.io/github/downloads/amulheirn/fn-onboarder/total.svg?style=flat-square)](https://github.com/amulheirn/fn-onboarder/releases)
-

@@ -358,11 +358,16 @@ def prepare_location_payloads(
         "AUSTRALIA": "AU",
     }
 
+    def strip_building_marker(addr: str) -> str:
+        """Remove building markers like 'Geb.FE10' and anything after for geocoding only."""
+        return re.sub(r"\s*Geb\..*$", "", addr, flags=re.IGNORECASE).strip()
+
     def normalize_address(addr: str) -> str:
         """Normalize supported formats into street, city, country ordering for geocoding."""
         addr = (addr or "").strip()
         if not addr:
             return ""
+        addr = strip_building_marker(addr)
         # Already comma-separated; leave as-is
         if "," in addr:
             return addr
@@ -1099,6 +1104,212 @@ def device_location_apply():
             "attempted": len(payload),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Tag maker
+# ---------------------------------------------------------------------------
+
+
+@app.get("/tags")
+def tags_page():
+    return render_template("tags.html", config=current_config())
+
+
+@app.get("/api/device-names")
+def list_device_names():
+    config = current_config()
+    if not config.get("network_id"):
+        return jsonify({"ok": False, "error": "Network ID is required. Set it on the home page."}), 400
+    try:
+        resp = api_request("get", f"/api/networks/{config['network_id']}/devices", config)
+    except requests.RequestException as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    try:
+        data = resp.json()
+    except ValueError:
+        data = resp.text
+
+    if 200 <= resp.status_code < 300 and isinstance(data, list):
+        names = [item.get("name") for item in data if isinstance(item, dict) and item.get("name")]
+        return jsonify({"ok": True, "names": names})
+    return jsonify({"ok": False, "status": resp.status_code, "response": data}), 400
+
+
+@app.post("/api/device-tags")
+def create_device_tags():
+    config = current_config()
+    if not config.get("network_id"):
+        return jsonify({"ok": False, "error": "Network ID is required. Set it on the home page."}), 400
+    payload = request.get_json(force=True)
+    tags = payload.get("tags") or []
+    if not isinstance(tags, list) or not tags:
+        return jsonify({"ok": False, "error": "Provide tags as a list of {name, color?}"}), 400
+    results: List[Dict[str, Any]] = []
+    created = 0
+    for tag in tags:
+        tag_name = (tag.get("name") or "").strip()
+        tag_color = (tag.get("color") or "").strip() or None
+        if not tag_name:
+            results.append({"ok": False, "error": "Missing tag name"})
+            continue
+        body: Dict[str, Any] = {"name": tag_name}
+        if tag_color:
+            body["color"] = tag_color
+        try:
+            resp = api_request("post", f"/api/networks/{config['network_id']}/device-tags", config, json_body=body)
+        except requests.RequestException as exc:
+            results.append({"ok": False, "name": tag_name, "error": str(exc)})
+            continue
+        try:
+            resp_body = resp.json()
+        except ValueError:
+            resp_body = resp.text
+        if 200 <= resp.status_code < 300:
+            created += 1
+            results.append({"ok": True, "name": tag_name, "status": resp.status_code, "response": resp_body})
+        else:
+            results.append(
+                {"ok": False, "name": tag_name, "status": resp.status_code, "response": resp_body}
+            )
+    return jsonify({"ok": created == len(results), "created": created, "total": len(results), "results": results})
+
+
+@app.get("/api/device-tags")
+def list_device_tags():
+    config = current_config()
+    if not config.get("network_id"):
+        return jsonify({"ok": False, "error": "Network ID is required. Set it on the home page."}), 400
+    try:
+        resp = api_request("get", f"/api/networks/{config['network_id']}/device-tags", config)
+    except requests.RequestException as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    try:
+        data = resp.json()
+    except ValueError:
+        data = resp.text
+
+    if 200 <= resp.status_code < 300:
+        # Some deployments return list directly, others wrap inside objects
+        tags = data
+        if isinstance(data, dict):
+            if "tags" in data and isinstance(data["tags"], list):
+                tags = data["tags"]
+            elif "items" in data:
+                tags = data.get("items")
+        return jsonify({"ok": True, "tags": tags})
+    return jsonify({"ok": False, "status": resp.status_code, "response": data}), 400
+
+@app.delete("/api/device-tags/<tag_name>")
+def delete_device_tag(tag_name: str):
+    config = current_config()
+    if not config.get("network_id"):
+        return jsonify({"ok": False, "error": "Network ID is required. Set it on the home page."}), 400
+    tag = (tag_name or "").strip()
+    if not tag:
+        return jsonify({"ok": False, "error": "tagName is required"}), 400
+    try:
+        resp = api_request("delete", f"/api/networks/{config['network_id']}/device-tags/{tag}", config)
+    except requests.RequestException as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    try:
+        body = resp.json()
+    except ValueError:
+        body = resp.text
+    if 200 <= resp.status_code < 300:
+        return jsonify({"ok": True, "status": resp.status_code, "response": body})
+    return jsonify({"ok": False, "status": resp.status_code, "response": body}), 400
+
+
+@app.patch("/api/device-tags/<tag_name>")
+def patch_device_tag(tag_name: str):
+    config = current_config()
+    if not config.get("network_id"):
+        return jsonify({"ok": False, "error": "Network ID is required. Set it on the home page."}), 400
+    current = (tag_name or "").strip()
+    if not current:
+        return jsonify({"ok": False, "error": "tagName is required"}), 400
+    payload = request.get_json(force=True) or {}
+    try:
+        resp = api_request(
+            "patch",
+            f"/api/networks/{config['network_id']}/device-tags/{current}",
+            config,
+            json_body=payload,
+        )
+    except requests.RequestException as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    try:
+        body = resp.json()
+    except ValueError:
+        body = resp.text
+    if 200 <= resp.status_code < 300:
+        return jsonify({"ok": True, "status": resp.status_code, "response": body})
+    return jsonify({"ok": False, "status": resp.status_code, "response": body}), 400
+
+@app.get("/api/snapshots/latest")
+def latest_snapshot():
+    config = current_config()
+    if not config.get("network_id"):
+        return jsonify({"ok": False, "error": "Network ID is required. Set it on the home page."}), 400
+    try:
+        resp = api_request("get", f"/api/networks/{config['network_id']}/snapshots/latestProcessed", config)
+    except requests.RequestException as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    try:
+        data = resp.json()
+    except ValueError:
+        data = resp.text
+    if 200 <= resp.status_code < 300:
+        snapshot_id = data.get("id") if isinstance(data, dict) else None
+        return jsonify({"ok": True, "snapshotId": snapshot_id, "response": data})
+    return jsonify({"ok": False, "status": resp.status_code, "response": data}), 400
+
+
+@app.post("/api/device-tags/apply")
+def apply_device_tags():
+    config = current_config()
+    if not config.get("network_id"):
+        return jsonify({"ok": False, "error": "Network ID is required. Set it on the home page."}), 400
+    payload = request.get_json(force=True)
+    groups = payload.get("groups") or []
+    validate = payload.get("validateDevices", True)
+    snapshot_id = (payload.get("snapshotId") or "").strip()
+    if not isinstance(groups, list) or not groups:
+        return jsonify({"ok": False, "error": "groups must be a non-empty list"}), 400
+
+    snapshot_part = f"&snapshotId={snapshot_id}" if snapshot_id else ""
+    results: List[Dict[str, Any]] = []
+    all_ok = True
+    for group in groups:
+        tag_name = (group.get("tagName") or "").strip()
+        devices = group.get("devices") or []
+        if not tag_name or not isinstance(devices, list) or not devices:
+            all_ok = False
+            results.append({"ok": False, "tag": tag_name or "(missing)", "error": "tagName and devices are required"})
+            continue
+        try:
+            resp = api_request(
+                "post",
+                f"/api/networks/{config['network_id']}/device-tags/{tag_name}?action=addTo&validateDevices={'true' if validate else 'false'}{snapshot_part}",
+                config,
+                json_body={"devices": devices},
+            )
+        except requests.RequestException as exc:
+            all_ok = False
+            results.append({"ok": False, "tag": tag_name, "error": str(exc)})
+            continue
+        try:
+            body = resp.json()
+        except ValueError:
+            body = resp.text
+        if 200 <= resp.status_code < 300:
+            results.append({"ok": True, "tag": tag_name, "status": resp.status_code, "response": body})
+        else:
+            all_ok = False
+            results.append({"ok": False, "tag": tag_name, "status": resp.status_code, "response": body})
+
+    return jsonify({"ok": all_ok, "results": results})
 
 
 if __name__ == "__main__":
