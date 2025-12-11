@@ -2,7 +2,7 @@
   <img src="./.github/onboarder-logo.png" width="250" alt="fn-onboarder logo" />
 </p>
 
-
+[![ALPHA](https://img.shields.io/badge/ALPHA-alpha-red.svg?style=for-the-badge&logo=git&logoColor=white)](https://github.com/amulheirn/fn-onboarder)
 # FN Onboarder (local Flask UI)
 
 Lightweight Flask app to help load data into Forward Networks via its API. Runs locally, keeps values in the browser session, and offers a dark/light theme plus a debug log.
@@ -37,3 +37,15 @@ Delete tab with select-all and live search.
 
 ## Running tests
 No automated tests included; run the app and exercise pages in the browser.
+
+
+
+
+[![license](https://img.shields.io/github/license/amulheirn/fn-onboarder.svg?style=flat-square)](https://github.com/amulheirn/fn-onboarder/blob/main/LICENSE)
+
+
+[![issues](https://img.shields.io/github/issues/amulheirn/fn-onboarder.svg?style=flat-square)](https://github.com/amulheirn/fn-onboarder/issues)
+
+
+[![downloads](https://img.shields.io/github/downloads/amulheirn/fn-onboarder/total.svg?style=flat-square)](https://github.com/amulheirn/fn-onboarder/releases)
+
