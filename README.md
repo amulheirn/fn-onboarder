@@ -1,9 +1,7 @@
 <p align="center">
-  <img src="./.github/onboarder-logo.png" width="200" alt="fn-onboarder logo" />
+  <img src="./.github/onboarder-logo.png" width="250" alt="fn-onboarder logo" />
 </p>
 
-<!-- Optional: a one-line header below the logo -->
-<h1 align="center">fn-onboarder</h1>
 
 # FN Onboarder (local Flask UI)
 
