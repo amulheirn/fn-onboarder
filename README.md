@@ -1,3 +1,10 @@
+<p align="center">
+  <img src="./.github/onboarder-logo.pngß" width="120" alt="fn-onboarder logo" />
+</p>
+
+<!-- Optional: a one-line header below the logo -->
+<h1 align="center">fn-onboarder</h1>
+
 # FN Onboarder (local Flask UI)
 
 Lightweight Flask app to help load data into Forward Networks via its API. Runs locally, keeps values in the browser session, and offers a dark/light theme plus a debug log.
