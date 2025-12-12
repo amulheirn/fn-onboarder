@@ -8,3 +8,5 @@ _build
 .DS_Store
 *.html
 snapshots
+*.csv
+.nqe_base_url

@@ -5,6 +5,7 @@ import io
 import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import requests
 from flask import (
@@ -156,6 +157,16 @@ ISO3_TO_ISO2 = {
 
 def current_config() -> Dict[str, str]:
     """Return config from the signed session cookie."""
+    try:
+        if not session.get("base_url"):
+            persisted = ""
+            if os.path.exists(".nqe_base_url"):
+                with open(".nqe_base_url", "r", encoding="utf-8") as f:
+                    persisted = f.read().strip()
+            if persisted:
+                session["base_url"] = persisted
+    except OSError:
+        pass
     return {
         "base_url": session.get("base_url") or DEFAULT_BASE_URL,
         "api_key": session.get("api_key") or "",
@@ -168,7 +179,8 @@ def current_config() -> Dict[str, str]:
 
 
 def save_config(form_data: Dict[str, str]) -> None:
-    session["base_url"] = form_data.get("base_url") or DEFAULT_BASE_URL
+    base_url = form_data.get("base_url") or DEFAULT_BASE_URL
+    session["base_url"] = base_url
     session["api_key"] = (form_data.get("api_key") or "").strip()
     session["api_secret"] = (form_data.get("api_secret") or "").strip()
     session["network_id"] = (form_data.get("network_id") or session.get("network_id") or "").strip()
@@ -177,6 +189,13 @@ def save_config(form_data: Dict[str, str]) -> None:
     disable_ssl = parse_bool(form_data.get("disable_ssl_verify"))
     session["verify_ssl"] = False if disable_ssl else True
     session.permanent = False
+    # Persist base URL locally (outside the repo) if it is a custom endpoint
+    try:
+        if base_url and base_url.strip() and base_url.strip().lower() != "https://fwd.app":
+            with open(".nqe_base_url", "w", encoding="utf-8") as f:
+                f.write(base_url.strip())
+    except OSError:
+        pass
 
 
 def build_auth(config: Dict[str, str]) -> Optional[Tuple[str, str]]:
@@ -695,6 +714,11 @@ def index() -> str:
     return render_template("index.html", config=current_config())
 
 
+@app.get("/nqe-structure")
+def nqe_structure_page() -> str:
+    return render_template("nqe_structure.html", config=current_config())
+
+
 @app.post("/config")
 def update_config_route():
     if request.is_json:
@@ -738,6 +762,26 @@ def test_version():
         "collector_online": bool(session.get("collector_online", False)),
         "network_name": session.get("network_name", ""),
     }), (200 if success else 400)
+
+
+@app.post("/api/nqe/add-dir")
+def nqe_add_dir():
+    config = current_config()
+    data = request.get_json(force=True)
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "Path is required"}), 400
+    try:
+        encoded_path = quote(path, safe="/")
+        api_path = f"/api/users/current/nqe/changes?action=addDir&path={encoded_path}"
+        resp = api_request("post", api_path, config)
+        try:
+            body = resp.json()
+        except ValueError:
+            body = resp.text
+        return jsonify({"ok": 200 <= resp.status_code < 300, "status": resp.status_code, "response": body})
+    except requests.RequestException as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
 
 
 @app.post("/api/collector-status")
@@ -1015,7 +1059,18 @@ def upload_locations():
                 }
             )
 
-    return jsonify({"ok": True, "total": total, "posted": posted, "results": results})
+    duplicate_count = sum(
+        1
+        for item in list(prep_errors) + list(results)
+        if isinstance(item, dict)
+        and isinstance(item.get("error"), str)
+        and (
+            "Duplicate location id/site-code" in item.get("error", "")
+            or "Duplicate location id '" in item.get("error", "")
+        )
+    )
+
+    return jsonify({"ok": True, "total": total, "posted": posted, "results": results, "duplicatesSkipped": duplicate_count})
 
 
 @app.post("/api/locations/delete")
@@ -1326,6 +1381,8 @@ def device_location_apply():
     name_to_id = {}
     if use_name:
         name_to_id = fetch_locations_map(config)
+    existing_loc_ids = fetch_existing_location_ids(config)
+    existing_loc_ids_lower = {i.lower() for i in existing_loc_ids}
 
     payload = {}
     results: List[Dict[str, Any]] = []
@@ -1374,6 +1431,29 @@ def device_location_apply():
                             "location": location_value,
                         }
                     )
+                continue
+        else:
+            if existing_loc_ids_lower and location_id.lower() not in existing_loc_ids_lower:
+                if location_value.lower() in skip_locations:
+                    results.append(
+                        {
+                            "row": idx,
+                            "ok": False,
+                            "error": f"Skipped (location id '{location_value}' not found in network)",
+                            "device": device_name,
+                            "location": location_value,
+                        }
+                    )
+                    continue
+                results.append(
+                    {
+                        "row": idx,
+                        "ok": False,
+                        "error": f"Location id '{location_value}' not found",
+                        "device": device_name,
+                        "location": location_value,
+                    }
+                )
                 continue
         payload[device_name] = location_id
 
