@@ -7,6 +7,12 @@
 
 Lightweight Flask app to help load data into Forward Networks via its API. Runs locally, keeps values in the browser session, and offers a dark/light theme plus a debug log.
 
+
+<p align="center">
+  <img src="./static/locations-screenshot.jpg" width="400" alt="Locations snapshot" />
+</p>
+
+
 ## Setup
 - Python 3.9+
 - Install dependencies with: `pip install -r requirements.txt`
