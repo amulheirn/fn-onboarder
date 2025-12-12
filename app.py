@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import os
 import re
@@ -24,6 +23,131 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-change-me")
 
 DEFAULT_BASE_URL = os.environ.get("DEFAULT_BASE_URL", "https://fwd.app")
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
+NOMINATIM_URL = os.environ.get("NOMINATIM_URL", "https://nominatim.openstreetmap.org/search")
+NOMINATIM_USER_AGENT = os.environ.get("NOMINATIM_USER_AGENT", "fn-onboarder/1.0 (https://fwd.app)")
+
+COUNTRY_NAME_TO_CODE = {
+    "GERMANY": "DE",
+    "DEUTSCHLAND": "DE",
+    "FRANCE": "FR",
+    "SPAIN": "ES",
+    "ITALY": "IT",
+    "UNITED STATES": "US",
+    "USA": "US",
+    "UNITED STATES OF AMERICA": "US",
+    "UK": "GB",
+    "UNITED KINGDOM": "GB",
+    "GREAT BRITAIN": "GB",
+    "ENGLAND": "GB",
+    "WALES": "GB",
+    "SCOTLAND": "GB",
+    "AUSTRIA": "AT",
+    "BELGIUM": "BE",
+    "BULGARIA": "BG",
+    "CROATIA": "HR",
+    "CYPRUS": "CY",
+    "CZECHIA": "CZ",
+    "CZECH REPUBLIC": "CZ",
+    "DENMARK": "DK",
+    "ESTONIA": "EE",
+    "FINLAND": "FI",
+    "GREECE": "GR",
+    "HUNGARY": "HU",
+    "ICELAND": "IS",
+    "IRELAND": "IE",
+    "LITHUANIA": "LT",
+    "LATVIA": "LV",
+    "LUXEMBOURG": "LU",
+    "MALTA": "MT",
+    "NETHERLANDS": "NL",
+    "HOLLAND": "NL",
+    "NORWAY": "NO",
+    "POLAND": "PL",
+    "PORTUGAL": "PT",
+    "ROMANIA": "RO",
+    "SLOVAKIA": "SK",
+    "SLOVENIA": "SI",
+    "SWEDEN": "SE",
+    "SWITZERLAND": "CH",
+    "SUISSE": "CH",
+    "SCHWEIZ": "CH",
+}
+
+ALLOWED_COUNTRY_CODES: Set[str] = set(COUNTRY_NAME_TO_CODE.values())
+# Explicitly allow the codes used in the default-country dropdown
+ALLOWED_COUNTRY_CODES.update(
+    {
+        "AT",
+        "BE",
+        "BG",
+        "CH",
+        "CY",
+        "CZ",
+        "DE",
+        "DK",
+        "EE",
+        "ES",
+        "FI",
+        "FR",
+        "GB",
+        "GR",
+        "HR",
+        "HU",
+        "IE",
+        "IS",
+        "IT",
+        "LT",
+        "LU",
+        "LV",
+        "MT",
+        "NL",
+        "NO",
+        "PL",
+        "PT",
+        "RO",
+        "SE",
+        "SI",
+        "SK",
+        "US",
+    }
+)
+
+ISO3_TO_ISO2 = {
+    "DEU": "DE",
+    "FRA": "FR",
+    "ESP": "ES",
+    "ITA": "IT",
+    "GBR": "GB",
+    "USA": "US",
+    "AUS": "AU",
+    "CAN": "CA",
+    "AUT": "AT",
+    "BEL": "BE",
+    "BGR": "BG",
+    "HRV": "HR",
+    "CYP": "CY",
+    "CZE": "CZ",
+    "DNK": "DK",
+    "EST": "EE",
+    "FIN": "FI",
+    "GRC": "GR",
+    "HUN": "HU",
+    "ISL": "IS",
+    "IRL": "IE",
+    "LTU": "LT",
+    "LVA": "LV",
+    "LUX": "LU",
+    "MLT": "MT",
+    "NLD": "NL",
+    "NOR": "NO",
+    "POL": "PL",
+    "PRT": "PT",
+    "ROU": "RO",
+    "SVK": "SK",
+    "SVN": "SI",
+    "SWE": "SE",
+    "CHE": "CH",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -226,27 +350,69 @@ def parse_float(value: Any) -> Optional[float]:
         return None
 
 
-def parse_csv_text(csv_text: str, has_headers: bool = True) -> Tuple[List[str], List[Dict[str, str]]]:
-    cleaned = csv_text.strip()
+def parse_csv_text(csv_text: str, has_headers: bool = True) -> Tuple[List[str], List[Dict[str, str]], List[str]]:
+    cleaned = csv_text.lstrip("\ufeff").strip()
     if not cleaned:
-        return [], []
+        return [], [], []
 
-    preview = cleaned[:1024]
-    try:
-        dialect = csv.Sniffer().sniff(preview)
-    except csv.Error:
+    preview = cleaned[:2048]
+
+    def detect_delimiter(sample: str) -> Optional[str]:
+        lines = sample.splitlines()[:5]
+        candidates = [",", ";", "\t", "|"]
+        best_delim = None
+        best_score = -1
+        for delim in candidates:
+            counts = [line.count(delim) for line in lines if line.strip()]
+            if not counts:
+                continue
+            score = sum(counts)
+            if score > best_score:
+                best_score = score
+                best_delim = delim
+        return best_delim if best_score > 0 else None
+
+    detected_delim = detect_delimiter(preview)
+    if detected_delim:
         dialect = csv.excel
+        dialect.delimiter = detected_delim  # type: ignore[attr-defined]
+    else:
+        try:
+            dialect = csv.Sniffer().sniff(preview)
+        except csv.Error:
+            dialect = csv.excel
+
+    def sanitize_header(name: str, seen: Set[str], fallback: str) -> str:
+        base = re.sub(r"[^A-Za-z0-9]+", "_", (name or "").strip().lstrip("\ufeff")).strip("_")
+        base = base or fallback
+        candidate = base
+        counter = 1
+        while candidate in seen:
+            counter += 1
+            candidate = f"{base}_{counter}"
+        seen.add(candidate)
+        return candidate
 
     if has_headers:
         reader = csv.DictReader(io.StringIO(cleaned), dialect=dialect)
-        headers = reader.fieldnames or []
-        rows = [row for row in reader if row and any((value or "").strip() for value in row.values())]
-        return headers, rows
+        raw_headers = [h or "" for h in (reader.fieldnames or [])]
+        seen: Set[str] = set()
+        headers = [sanitize_header(h, seen, f"col{i+1}") for i, h in enumerate(raw_headers)]
+        rows: List[Dict[str, str]] = []
+        for raw_row in reader:
+            if not raw_row or not any((value or "").strip() for value in raw_row.values()):
+                continue
+            row_dict: Dict[str, str] = {}
+            for raw_h, safe_h in zip(raw_headers, headers):
+                row_dict[safe_h] = raw_row.get(raw_h, "")
+            rows.append(row_dict)
+        header_labels = [h.strip().lstrip("\ufeff") or headers[idx] for idx, h in enumerate(raw_headers)]
+        return headers, rows, header_labels
 
     reader = csv.reader(io.StringIO(cleaned), dialect=dialect)
     raw_rows = [row for row in reader]
     if not raw_rows:
-        return [], []
+        return [], [], []
     headers = [f"col{i+1}" for i in range(len(raw_rows[0]))]
     rows: List[Dict[str, str]] = []
     for raw in raw_rows:
@@ -255,7 +421,20 @@ def parse_csv_text(csv_text: str, has_headers: bool = True) -> Tuple[List[str], 
         row_dict = {h: padded[i] if i < len(padded) else "" for i, h in enumerate(headers)}
         if any((v or "").strip() for v in row_dict.values()):
             rows.append(row_dict)
-    return headers, rows
+    return headers, rows, headers
+
+
+def rows_to_csv(rows: List[Dict[str, Any]], headers: Optional[List[str]] = None) -> str:
+    """Serialize rows to CSV with provided headers (or keys of the first row)."""
+    if not rows:
+        return ""
+    fieldnames = headers if headers else list(rows[0].keys())
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({h: row.get(h, "") for h in fieldnames})
+    return output.getvalue()
 
 
 def slugify(text: str, fallback: str = "") -> str:
@@ -266,14 +445,57 @@ def slugify(text: str, fallback: str = "") -> str:
     return fallback or "site"
 
 
-def pseudo_geocode(address: str) -> Tuple[float, float]:
-    """Deterministic pseudo-geocode to avoid external calls in offline mode."""
-    digest = hashlib.sha1(address.encode("utf-8", errors="ignore")).digest()
-    lat_raw = int.from_bytes(digest[:4], "big")
-    lng_raw = int.from_bytes(digest[4:8], "big")
-    lat = (lat_raw / (2**32 - 1)) * 180 - 90
-    lng = (lng_raw / (2**32 - 1)) * 360 - 180
-    return round(lat, 4), round(lng, 4)
+def normalize_country_code(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    code = str(value).strip().upper()
+    if not code:
+        return None
+    if code in COUNTRY_NAME_TO_CODE:
+        mapped = COUNTRY_NAME_TO_CODE[code]
+        return mapped if mapped in ALLOWED_COUNTRY_CODES else None
+    if len(code) == 2 and code.isalpha():
+        candidate = "GB" if code == "UK" else code
+        return candidate if candidate in ALLOWED_COUNTRY_CODES else None
+    if len(code) == 3 and code.isalpha():
+        mapped = ISO3_TO_ISO2.get(code)
+        if mapped and mapped in ALLOWED_COUNTRY_CODES:
+            return mapped
+    return None
+
+
+def geocode_address(address: str, country_hint: Optional[str]) -> Tuple[float, float]:
+    query = (address or "").strip()
+    if not query:
+        raise ValueError("Address is empty")
+    params = {"q": query, "format": "jsonv2", "limit": 1}
+    if country_hint:
+        params["countrycodes"] = country_hint.lower()
+    headers = {"User-Agent": NOMINATIM_USER_AGENT}
+    try:
+        resp = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        raise ValueError(f"Geocoding request failed: {exc}")
+
+    if not 200 <= resp.status_code < 300:
+        raise ValueError(f"Geocoding failed (HTTP {resp.status_code})")
+
+    try:
+        data = resp.json()
+    except ValueError:
+        raise ValueError("Geocoding response was not valid JSON")
+
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"No geocoding result for address '{address}'")
+
+    first = data[0] or {}
+    try:
+        lat_val = float(first.get("lat"))
+        lng_val = float(first.get("lon"))
+    except (TypeError, ValueError, KeyError):
+        raise ValueError("Geocoding result missing lat/lon")
+
+    return round(lat_val, 6), round(lng_val, 6)
 
 
 def prepare_location_payloads(
@@ -283,14 +505,17 @@ def prepare_location_payloads(
     existing_ids: Optional[Set[str]] = None,
     has_headers: bool = True,
     city_overrides: Optional[Set[str]] = None,
+    default_country: Optional[str] = None,
 ) -> Tuple[List[Tuple[int, Dict[str, Any]]], List[Dict[str, Any]], int]:
     """Convert CSV rows to location payloads and collect per-row errors."""
-    headers, rows = parse_csv_text(csv_text, has_headers)
+    headers, rows, _header_labels = parse_csv_text(csv_text, has_headers)
     payloads: List[Tuple[int, Dict[str, Any]]] = []
     errors: List[Dict[str, Any]] = []
     used_ids: Set[str] = set(existing_ids or set())
     prefix_counters: Dict[str, int] = {}
     override_set: Set[str] = {c.strip().lower() for c in (city_overrides or set()) if c and c.strip()}
+    default_country_code = normalize_country_code(default_country)
+    seen_rows: Set[Tuple[str, str]] = set()
 
     def split_prefix_num(value: str) -> Tuple[str, Optional[int]]:
         digits = ""
@@ -332,32 +557,6 @@ def prepare_location_payloads(
         used_ids.add(candidate)
         return candidate
 
-    COUNTRY_BOUNDS = {
-        "DE": ((47.27, 55.09), (5.87, 15.04)),
-        "US": ((24.52, 49.38), (-124.77, -66.95)),
-        "GB": ((49.8, 60.9), (-8.6, 1.8)),
-        "UK": ((49.8, 60.9), (-8.6, 1.8)),
-        "FR": ((41.0, 51.1), (-5.1, 9.6)),
-        "ES": ((27.6, 43.8), (-18.2, 4.3)),
-        "IT": ((36.6, 47.1), (6.6, 18.5)),
-        "CA": ((41.7, 83.1), (-141.0, -52.6)),
-        "AU": ((-43.7, -10.7), (113.3, 153.6)),
-    }
-
-    COUNTRY_NAME_TO_CODE = {
-        "GERMANY": "DE",
-        "DEUTSCHLAND": "DE",
-        "UNITED STATES": "US",
-        "USA": "US",
-        "UK": "GB",
-        "UNITED KINGDOM": "GB",
-        "FRANCE": "FR",
-        "SPAIN": "ES",
-        "ITALY": "IT",
-        "CANADA": "CA",
-        "AUSTRALIA": "AU",
-    }
-
     def strip_building_marker(addr: str) -> str:
         """Remove building markers like 'Geb.FE10' and anything after for geocoding only."""
         return re.sub(r"\s*Geb\..*$", "", addr, flags=re.IGNORECASE).strip()
@@ -375,28 +574,32 @@ def prepare_location_payloads(
         tokens = addr.split()
         if len(tokens) >= 3 and len(tokens[0]) in (2, 3) and tokens[0].isalpha():
             country = tokens[0].strip()
-            rest_tokens = tokens[1:]
-            # Try override matches (longest first)
-            city = rest_tokens[0].strip()
-            street_tokens = rest_tokens[1:]
-            if override_set:
-                sorted_overrides = sorted(override_set, key=lambda x: len(x.split()), reverse=True)
-                for ov in sorted_overrides:
-                    ov_parts = ov.split()
-                    if len(ov_parts) <= len(rest_tokens) and [p.lower() for p in rest_tokens[: len(ov_parts)]] == ov_parts:
-                        city = " ".join(rest_tokens[: len(ov_parts)])
-                        street_tokens = rest_tokens[len(ov_parts):]
-                        break
-            street = " ".join(street_tokens).strip()
-            if street:
-                return f"{street}, {city}, {country}"
+            country_code = normalize_country_code(country)
+            if country_code:
+                rest_tokens = tokens[1:]
+                # Try override matches (longest first)
+                city = rest_tokens[0].strip()
+                street_tokens = rest_tokens[1:]
+                if override_set:
+                    sorted_overrides = sorted(override_set, key=lambda x: len(x.split()), reverse=True)
+                    for ov in sorted_overrides:
+                        ov_parts = ov.split()
+                        if len(ov_parts) <= len(rest_tokens) and [p.lower() for p in rest_tokens[: len(ov_parts)]] == ov_parts:
+                            city = " ".join(rest_tokens[: len(ov_parts)])
+                            street_tokens = rest_tokens[len(ov_parts):]
+                            break
+                street = " ".join(street_tokens).strip()
+                if street:
+                    return f"{street}, {city}, {country}"
         # Regex fallback for unicode city names
         match = re.match(r"^\s*(?P<country>[A-Za-z]{2,3})\s+(?P<city>[^,]+?)\s+(?P<street>.+)$", addr, flags=re.UNICODE)
         if match:
-            country = match.group("country").strip()
-            city = match.group("city").strip()
-            street = match.group("street").strip()
-            return f"{street}, {city}, {country}"
+            country_raw = match.group("country").strip()
+            country_code = normalize_country_code(country_raw)
+            if country_code:
+                city = match.group("city").strip()
+                street = match.group("street").strip()
+                return f"{street}, {city}, {country_code}"
         return addr
 
     def extract_country_code(raw_addr: str, normalized: str) -> Optional[str]:
@@ -410,40 +613,38 @@ def prepare_location_payloads(
                 last = text.split(",")[-1].strip()
                 token = (last.split()[:1] or [""])[0].upper()
                 if len(token) in (2, 3) and token.isalpha():
-                    return token
-                name = last.upper()
-                if name in COUNTRY_NAME_TO_CODE:
-                    return COUNTRY_NAME_TO_CODE[name]
+                    code = normalize_country_code(token)
+                    if code:
+                        return code
+                name = last.upper() or ""
+                mapped = normalize_country_code(name)
+                if mapped:
+                    return mapped
             # Space-separated first token might be country code
             parts = text.split()
             if parts and len(parts[0]) in (2, 3) and parts[0].isalpha():
-                return parts[0].upper()
+                code = normalize_country_code(parts[0])
+                if code:
+                    return code
             # Name lookup
             name = parts[-1].upper() if parts else ""
-            if name in COUNTRY_NAME_TO_CODE:
-                return COUNTRY_NAME_TO_CODE[name]
+            mapped = normalize_country_code(name)
+            if mapped:
+                return mapped
         return None
-
-    def clamp_to_country(lat: float, lng: float, country_code: Optional[str]) -> Tuple[float, float]:
-        if not country_code:
-            return lat, lng
-        bounds = COUNTRY_BOUNDS.get(country_code.upper())
-        if not bounds:
-            return lat, lng
-        (lat_min, lat_max), (lng_min, lng_max) = bounds
-        # Normalize raw lat/lng to 0-1 then scale into country bounds
-        lat_norm = (lat + 90) / 180.0
-        lng_norm = (lng + 180) / 360.0
-        lat_clamped = lat_min + (lat_max - lat_min) * max(0.0, min(1.0, lat_norm))
-        lng_clamped = lng_min + (lng_max - lng_min) * max(0.0, min(1.0, lng_norm))
-        return round(lat_clamped, 4), round(lng_clamped, 4)
 
     for index, row in enumerate(rows, start=1):
         try:
             row_name = (row.get(mapping["name"], "") or "").strip()
             row_address_raw = (row.get(mapping["address"], "") or "").strip()
             row_address = normalize_address(row_address_raw)
-            country_code = extract_country_code(row_address_raw, row_address)
+            dedupe_key = (row_name.lower(), row_address.lower())
+            if dedupe_key in seen_rows:
+                errors.append({"row": index, "ok": False, "error": "Duplicate name+address; skipping row"})
+                continue
+            seen_rows.add(dedupe_key)
+            explicit_country = extract_country_code(row_address_raw, row_address)
+            country_code = explicit_country or default_country_code
             site_code_value = None
             if mapping.get("siteCode"):
                 site_code_value = (row.get(mapping["siteCode"], "") or "").strip()
@@ -456,13 +657,16 @@ def prepare_location_payloads(
             if site_code_value:
                 final_id = site_code_value
                 if final_id in used_ids:
-                    raise ValueError(f"Duplicate site-code/id detected: {final_id}")
+                    errors.append({"row": index, "ok": False, "error": f"Duplicate location id/site-code '{final_id}' found; skipping row"})
+                    continue
                 used_ids.add(final_id)
             else:
                 final_id = next_site_code(row_name, row_address)
 
-            lat_raw, lng_raw = pseudo_geocode(row_address)
-            lat, lng = clamp_to_country(lat_raw, lng_raw, country_code)
+            geocode_query = row_address
+            if not explicit_country and country_code:
+                geocode_query = f"{row_address}, {country_code}"
+            lat, lng = geocode_address(geocode_query, country_code)
 
             location_payload: Dict[str, Any] = {
                 "id": final_id,
@@ -662,9 +866,13 @@ def preview_locations():
     data = request.get_json(force=True)
     csv_text = data.get("csvText") or ""
     has_headers = bool(data.get("hasHeaders", True))
-    headers, rows = parse_csv_text(csv_text, has_headers)
+    include_full = bool(data.get("full", False))
+    headers, rows, header_labels = parse_csv_text(csv_text, has_headers)
     sample_rows = rows[:5]
-    return jsonify({"headers": headers, "sample": sample_rows})
+    resp: Dict[str, Any] = {"headers": headers, "headerLabels": header_labels, "sample": sample_rows}
+    if include_full:
+        resp["rows"] = rows
+    return jsonify(resp)
 
 
 @app.post("/api/locations/geocode")
@@ -672,19 +880,30 @@ def geocode_locations():
     config = current_config()
     payload = request.get_json(force=True)
     csv_text = payload.get("csvText") or ""
+    rows_payload = payload.get("rows")
     mapping: Dict[str, Optional[str]] = payload.get("mapping") or {}
     auto_site_code = bool(payload.get("autoGenerateSiteCode", True))
     has_headers = bool(payload.get("hasHeaders", True))
     city_overrides = set(payload.get("cityOverrides") or [])
+    default_country = payload.get("defaultCountry")
 
     required_fields = ["name", "address"]
     missing_fields = [field for field in required_fields if not mapping.get(field)]
     if missing_fields:
         return jsonify({"ok": False, "error": f"Missing mappings for: {', '.join(missing_fields)}"}), 400
 
+    if isinstance(rows_payload, list) and rows_payload:
+        normalized_rows: List[Dict[str, Any]] = []
+        for item in rows_payload:
+            if isinstance(item, dict):
+                normalized_rows.append({k: (v if v is not None else "") for k, v in item.items()})
+        if normalized_rows:
+            csv_text = rows_to_csv(normalized_rows)
+            has_headers = True
+
     existing_ids = fetch_existing_location_ids(config)
     payloads, errors, total = prepare_location_payloads(
-        csv_text, mapping, auto_site_code, existing_ids, has_headers, city_overrides
+        csv_text, mapping, auto_site_code, existing_ids, has_headers, city_overrides, default_country
     )
     locations = [{"row": row_num, "location": loc} for row_num, loc in payloads]
     return jsonify(
@@ -726,10 +945,12 @@ def upload_locations():
 
     payload = request.get_json(force=True)
     csv_text = payload.get("csvText") or ""
+    rows_payload = payload.get("rows")
     mapping: Dict[str, Optional[str]] = payload.get("mapping") or {}
     auto_site_code = bool(payload.get("autoGenerateSiteCode", True))
     has_headers = bool(payload.get("hasHeaders", True))
     city_overrides = set(payload.get("cityOverrides") or [])
+    default_country = payload.get("defaultCountry")
 
     required_fields = ["name", "address"]
     missing_fields = [field for field in required_fields if not mapping.get(field)]
@@ -737,13 +958,37 @@ def upload_locations():
         return jsonify({"ok": False, "error": f"Missing mappings for: {', '.join(missing_fields)}"}), 400
 
     existing_ids = fetch_existing_location_ids(config)
+    if isinstance(rows_payload, list) and rows_payload:
+        normalized_rows: List[Dict[str, Any]] = []
+        for item in rows_payload:
+            if isinstance(item, dict):
+                normalized_rows.append({k: (v if v is not None else "") for k, v in item.items()})
+        if normalized_rows:
+            csv_text = rows_to_csv(normalized_rows)
+            has_headers = True
+
     payloads, prep_errors, total = prepare_location_payloads(
-        csv_text, mapping, auto_site_code, existing_ids, has_headers, city_overrides
+        csv_text, mapping, auto_site_code, existing_ids, has_headers, city_overrides, default_country
     )
     results: List[Dict[str, Any]] = list(prep_errors)
     posted = 0
 
     for row_num, location_payload in payloads:
+        loc_id = str(location_payload.get("id") or location_payload.get("siteCode") or "").strip()
+        if loc_id:
+            if not hasattr(upload_locations, "_posted_ids"):
+                upload_locations._posted_ids = set()  # type: ignore[attr-defined]
+            posted_ids_set = upload_locations._posted_ids  # type: ignore[attr-defined]
+            if loc_id in posted_ids_set:
+                results.append(
+                    {
+                        "row": row_num,
+                        "ok": False,
+                        "error": f"Duplicate location id '{loc_id}' in request; skipped",
+                    }
+                )
+                continue
+            posted_ids_set.add(loc_id)
         try:
             resp = api_request(
                 "post", f"/api/networks/{config['network_id']}/locations", config, json_body=location_payload
@@ -912,8 +1157,12 @@ def preview_devices():
     data = request.get_json(force=True)
     csv_text = data.get("csvText") or ""
     has_headers = bool(data.get("hasHeaders", True))
-    headers, rows = parse_csv_text(csv_text, has_headers)
-    return jsonify({"headers": headers, "sample": rows[:5], "fields": DEVICE_FIELDS})
+    include_full = bool(data.get("full", False))
+    headers, rows, header_labels = parse_csv_text(csv_text, has_headers)
+    resp: Dict[str, Any] = {"headers": headers, "headerLabels": header_labels, "sample": rows[:5], "fields": DEVICE_FIELDS}
+    if include_full:
+        resp["rows"] = rows
+    return jsonify(resp)
 
 
 @app.post("/api/devices")
@@ -932,7 +1181,7 @@ def upload_devices():
     if missing:
         return jsonify({"ok": False, "error": f"Missing mappings for: {', '.join(missing)}"}), 400
 
-    headers, rows = parse_csv_text(csv_text, has_headers)
+    headers, rows, _header_labels = parse_csv_text(csv_text, has_headers)
     results: List[Dict[str, Any]] = []
     posted = 0
 
@@ -1006,8 +1255,12 @@ def device_location_preview():
     data = request.get_json(force=True)
     csv_text = data.get("csvText") or ""
     has_headers = bool(data.get("hasHeaders", True))
-    headers, rows = parse_csv_text(csv_text, has_headers)
-    return jsonify({"headers": headers, "sample": rows[:5]})
+    include_full = bool(data.get("full", False))
+    headers, rows, header_labels = parse_csv_text(csv_text, has_headers)
+    resp: Dict[str, Any] = {"headers": headers, "headerLabels": header_labels, "sample": rows[:5]}
+    if include_full:
+        resp["rows"] = rows
+    return jsonify(resp)
 
 
 def fetch_locations_map(config: Dict[str, str]) -> Dict[str, str]:
@@ -1023,6 +1276,19 @@ def fetch_locations_map(config: Dict[str, str]) -> Dict[str, str]:
     return {}
 
 
+def fetch_device_name_set(config: Dict[str, str]) -> Set[str]:
+    if not config.get("network_id"):
+        return set()
+    try:
+        resp = api_request("get", f"/api/networks/{config['network_id']}/devices", config)
+        data = resp.json()
+        if 200 <= resp.status_code < 300 and isinstance(data, list):
+            return {str(item.get("name")).strip().lower() for item in data if isinstance(item, dict) and item.get("name")}
+    except Exception:
+        return set()
+    return set()
+
+
 @app.post("/api/device-location/apply")
 def device_location_apply():
     config = current_config()
@@ -1034,15 +1300,28 @@ def device_location_apply():
     mapping = data.get("mapping") or {}
     use_name = bool(data.get("useName"))
     has_headers = bool(data.get("hasHeaders", True))
+    skip_devices = {str(d).strip().lower() for d in (data.get("skipDevices") or []) if str(d).strip()}
+    skip_locations = {str(d).strip().lower() for d in (data.get("skipLocations") or []) if str(d).strip()}
+    network_devices = fetch_device_name_set(config)
 
     device_col = mapping.get("device")
     loc_col = mapping.get("location")
     if not device_col or not loc_col:
         return jsonify({"ok": False, "error": "device and location columns are required"}), 400
 
-    headers, rows = parse_csv_text(csv_text, has_headers)
-    if not headers:
-        return jsonify({"ok": False, "error": "No CSV headers detected"}), 400
+    rows_payload = data.get("rows")
+    headers: List[str] = []
+    rows: List[Dict[str, Any]] = []
+    if isinstance(rows_payload, list) and rows_payload:
+        for item in rows_payload:
+            if isinstance(item, dict):
+                rows.append({k: (v if v is not None else "") for k, v in item.items()})
+        # derive headers from first row
+        headers = list(rows[0].keys()) if rows else []
+    else:
+        headers, rows, _header_labels = parse_csv_text(csv_text, has_headers)
+    if not headers or not rows:
+        return jsonify({"ok": False, "error": "No CSV rows detected"}), 400
 
     name_to_id = {}
     if use_name:
@@ -1053,6 +1332,12 @@ def device_location_apply():
     for idx, row in enumerate(rows, start=1):
         device_name = (row.get(device_col, "") or "").strip()
         location_value = (row.get(loc_col, "") or "").strip()
+        if device_name.lower() in skip_devices:
+            results.append({"row": idx, "ok": False, "device": device_name, "error": "Skipped (device not found in network)"})
+            continue
+        if network_devices and device_name.strip().lower() not in network_devices:
+            results.append({"row": idx, "ok": False, "device": device_name, "error": "Skipped (device not found in network)"})
+            continue
         if not device_name or not location_value:
             results.append(
                 {
@@ -1068,15 +1353,27 @@ def device_location_apply():
         if use_name:
             location_id = name_to_id.get(location_value.lower())
             if not location_id:
-                results.append(
-                    {
-                        "row": idx,
-                        "ok": False,
-                        "error": f"Location name '{location_value}' not found",
-                        "device": device_name,
-                        "location": location_value,
-                    }
-                )
+                if location_value.lower() in skip_locations:
+                    results.append(
+                        {
+                            "row": idx,
+                            "ok": False,
+                            "error": f"Skipped (location '{location_value}' not found in network)",
+                            "device": device_name,
+                            "location": location_value,
+                        }
+                    )
+                    continue
+                else:
+                    results.append(
+                        {
+                            "row": idx,
+                            "ok": False,
+                            "error": f"Location name '{location_value}' not found",
+                            "device": device_name,
+                            "location": location_value,
+                        }
+                    )
                 continue
         payload[device_name] = location_id
 
